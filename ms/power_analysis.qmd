@@ -1,0 +1,303 @@
+---
+title: "Statistical Power Analysis: Sand-Plot Track Detection — BACI Design"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    theme: cosmo
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(knitr)
+
+# All outputs are loaded from pre-computed RDS files (produced by
+# src/03_run_simulations.R, run from the project root).
+power_full  <- readRDS("../out/power_full_grid.rds")
+power_focal <- readRDS("../out/power_focal_grid.rds")
+species_df  <- readRDS("../out/species_baselines.rds")
+
+effect_labels <- c(
+  reduction_25pct = "25% relative reduction",
+  reduction_50pct = "50% relative reduction",
+  reduction_75pct = "75% relative reduction"
+)
+```
+
+## Overview
+
+This document reports a simulation-based statistical power analysis for a
+Before–After Control–Impact (BACI) monitoring design in which animal track
+detections at sand plots are the primary response variable. The goal is to
+determine the number of plots required to reliably detect a biologically
+meaningful decline in track detection probability following an impact event.
+
+## Methods
+
+### Study design
+
+The proposed design follows a two-treatment ($\times$ two-period) BACI
+structure:
+
+- **Treatments**: impact plots (subject to disturbance) and control plots
+  (undisturbed reference sites).
+- **Periods**: three survey years before the impact event and three years after.
+- Each plot is surveyed once per year under standardised conditions (same
+  season, cleared substrate, narrow weather window), so the primary observation
+  at each plot–visit is binary: tracks of a given species detected (1) or not
+  (0).
+
+The parameter of interest is the **time × treatment interaction**: a departure
+from parallel temporal trends between impact and control groups that is
+attributable to the impact.
+
+### Statistical model
+
+Each simulated dataset is analysed with a binomial generalised linear mixed
+model (GLMM):
+
+$$
+\text{logit}(p_{ijt}) = \beta_0 + \beta_1 \cdot \text{After}_t
+  + \beta_2 \cdot \text{Impact}_i
+  + \beta_3 \cdot \text{After}_t \times \text{Impact}_i
+  + u_i
+$$
+
+where $i$ indexes plots, $t$ indexes survey years,
+$u_i \sim \mathcal{N}(0, \sigma^2_{\text{plot}})$ is a plot-level random
+intercept, and $\beta_3$ is the BACI interaction coefficient. Power is
+estimated as the proportion of simulations in which the Wald $z$-test for
+$\beta_3$ rejects $H_0 : \beta_3 = 0$ at $\alpha = 0.05$.
+
+Models were fitted with the `lme4` package [@bates2015] using the BOBYQA
+optimiser.
+
+### Simulation parameters
+
+**Baseline detection probabilities** were derived from historical sand-plot
+survey data (Table 9 of the project baseline report). 
+
+**Between-plot variability** ($\sigma_{\text{plot}}$) was estimated from a binomial GLM with random effects of site, from previous data on repeat-surveyed sites. 
+
+**Minimum detectable effect (MDE)**: three scenarios are compared:
+
+- **25% relative reduction** — detection probability in impact plots falls to
+  75% of its pre-impact baseline while controls remain stable (e.g.
+  $p_0 = 0.40 \rightarrow p_{\text{impact, after}} = 0.30$).
+- **50% relative reduction** — detection probability halves
+  (e.g. $p_0 = 0.40 \rightarrow p_{\text{impact, after}} = 0.20$).
+- **75% relative reduction** — detection probability drops by three quarters
+  (e.g. $p_0 = 0.40 \rightarrow p_{\text{impact, after}} = 0.10$).
+
+
+**Sample size range**: $n = 20$–$50$ plots per treatment group (the proposed
+field budget), with an extended grid of $n = 20$–$200$ evaluated for four
+representative focal species.
+
+All simulations used 200 Monte Carlo replicates per cell. Parallel computation
+used `parallel::mcmapply` across up to six CPU cores; the random seed was fixed
+at 9034 for reproducibility.
+
+## Baseline detection probabilities
+
+```{r tbl-baselines}
+#| label: tbl-baselines
+#| tbl-cap: "Baseline detection probabilities for all species recorded in
+#|   historical sand-plot surveys (n = 460 plots). Species are ordered by
+#|   detection frequency."
+
+species_df |>
+  filter(p_baseline < 1) |>
+  select(species, detections, p_baseline, sigma) |>
+  arrange(desc(p_baseline)) |> 
+  mutate(
+    p_baseline = round(p_baseline, 3),
+    detections = as.integer(detections)
+  ) |>
+  rename(
+    Species    = species,
+    Detections = detections,
+    `Baseline p` = p_baseline,
+    Sigma = sigma
+  ) |>
+  kable(align = c("l", "r", "r"))
+```
+
+## Power results
+
+### Power within the proposed plot budget (n = 20–50)
+
+@fig-power-vs-p shows simulated power across all species for plots per group
+in the range 20–50, for all three MDEs. The 80% power threshold (dashed line) is
+not approached by any species or sample size under the 25% MDE. Under the 50%
+MDE, power remains well below 80% for all but the most commonly detected
+species even at $n = 50$. Under the 75% MDE, power approaches or exceeds 80%
+for the most detectable species at $n = 50$.
+
+```{r fig-power-vs-p}
+#| label: fig-power-vs-p
+#| fig-cap: "Simulated power vs baseline detection probability for three minimum
+#|   detectable effects (facets) and three plot counts per group (colours).
+#|   Points are individual species; curves are loess smooths.
+#|   Dashed line = 80% power."
+#| fig-width: 12
+#| fig-height: 4.5
+
+power_full |>
+  filter(p_baseline < 1, p_baseline >= 0.01) |>
+  mutate(
+    n_label      = factor(paste0("n = ", n_per_group),
+                          levels = paste0("n = ", c(20, 35, 50))),
+    effect_label = factor(effect_labels[effect_label], levels = effect_labels)
+  ) |>
+  ggplot(aes(x = p_baseline, y = power, colour = n_label, group = n_label)) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
+  geom_point(size = 1.8, alpha = 0.8) +
+  geom_smooth(se = FALSE, span = 1.2, linewidth = 0.8) +
+  annotate("text", x = 0.54, y = 0.84, label = "80% power",
+           colour = "grey35", size = 3.2, hjust = 1) +
+  facet_wrap(~effect_label, ncol = 3) +
+  scale_x_continuous(labels = scales::percent_format(), limits = c(0, 0.60)) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_colour_brewer(palette = "Set1", name = "Plots per group") +
+  labs(x = "Baseline detection probability", y = "Simulated power") +
+  theme_bw() +
+  theme(
+    legend.position  = "bottom",
+    strip.background = element_rect(fill = "grey92"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Summary table at n = 35 plots per group
+
+```{r tbl-power-n35}
+#| label: tbl-power-n35
+#| tbl-cap: "Simulated power at n = 35 plots per treatment group for all
+#|   species with baseline detection probability ≥ 1%. All three MDEs are shown.
+#|   Monte Carlo SE ≈ 0.024 for each cell (200 replicates)."
+
+power_full |>
+  filter(p_baseline < 1, p_baseline >= 0.01, n_per_group == 35) |>
+  select(species, p_baseline, effect_label, power) |>
+  pivot_wider(names_from = effect_label, values_from = power) |>
+  arrange(desc(p_baseline)) |>
+  mutate(
+    p_baseline        = round(p_baseline, 3),
+    reduction_25pct   = round(reduction_25pct, 2),
+    reduction_50pct   = round(reduction_50pct, 2),
+    reduction_75pct   = round(reduction_75pct, 2)
+  ) |>
+  rename(
+    Species           = species,
+    `Baseline p`      = p_baseline,
+    `Power (25% MDE)` = reduction_25pct,
+    `Power (50% MDE)` = reduction_50pct,
+    `Power (75% MDE)` = reduction_75pct
+  ) |>
+  kable(align = c("l", "r", "r", "r", "r"))
+```
+
+### Power curves for focal species
+
+@fig-power-curves extends the sample size range to $n = 200$ plots per group
+for four species representing a spread of baseline detection probabilities.
+These illustrate the approximate plot count required to achieve 80% power.
+
+```{r fig-power-curves}
+#| label: fig-power-curves
+#| fig-cap: "Simulated power vs plots per treatment group for four focal
+#|   species, under all three MDEs. Facet labels show species common names.
+#|   Dashed line = 80% power."
+#| fig-width: 8
+#| fig-height: 6
+
+power_focal |>
+  mutate(
+    effect_label = factor(effect_labels[effect_label], levels = effect_labels),
+    species      = str_remove(species, " \\(.*\\)")
+  ) |>
+  ggplot(aes(x = n_per_group, y = power,
+             colour = effect_label, group = effect_label)) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
+  geom_point(size = 2) +
+  geom_line() +
+  annotate("text", x = 198, y = 0.84, label = "80% power",
+           colour = "grey35", size = 3.2, hjust = 1) +
+  facet_wrap(~species, nrow = 2) +
+  scale_x_continuous(breaks = c(20, 50, 100, 150, 200)) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_colour_manual(
+    values = c("25% relative reduction" = "#E41A1C",
+               "50% relative reduction" = "#377EB8",
+               "75% relative reduction" = "orange"),
+    name   = "Minimum detectable effect"
+  ) +
+  labs(x = "Plots per treatment group", y = "Simulated power") +
+  theme_bw() +
+  theme(
+    legend.position  = "bottom",
+    strip.background = element_rect(fill = "grey92"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Discussion
+
+### Key findings
+
+Under the proposed field budget of 20–50 plots per treatment group, power is
+low for most species regardless of which MDE is assumed (@fig-power-vs-p,
+@tbl-power-n35):
+
+- **25% relative reduction**: power does not exceed ~25% for any species.
+  The design cannot reliably distinguish a 25% decline from sampling noise.
+- **50% relative reduction**: power reaches ~40–60% for the most detectable
+  species (e.g. *Felis catus*, *Macrotis lagotis*) at $n = 50$, but still
+  falls well short of the conventional 80% threshold.
+- **75% relative reduction**: power approaches or exceeds 80% at $n = 50$ for
+  species with the highest baseline detection probabilities, suggesting that
+  very large impacts are detectable within the proposed plot budget.
+
+Achieving 80% power for moderate effects requires substantially larger plot
+counts than are currently budgeted (@fig-power-curves). For a 50% MDE,
+approximately 100–150 plots per group are needed for species with baseline
+$p \geq 0.35$. For a 25% MDE, sample requirements exceed 200 plots per group
+for all species.
+
+### Practical recommendations
+
+1. **Target species selection**: Focus power calculations on the handful of
+   focal species with highest baseline $p$ (e.g. *Felis catus*,
+   *Macrotis lagotis*, *Varanus* sp.), where even moderate sample sizes
+   provide some discrimination.
+2. **Increase n or accept a larger MDE**: If the budget cannot support
+   $n \geq 100$ plots per group, the study should be framed as capable of
+   detecting only large effects (≥ 50–75% reduction) and reported with
+   explicit power caveats.
+3. **Reduce residual variance**: Stratified placement of plots by habitat
+   type, or including habitat covariates in the model, may reduce
+   $\sigma_{\text{plot}}$ and improve power without adding plots.
+4. **Multiple species composite**: A multi-species index (e.g. species
+   richness of native fauna tracks) may have lower variance than any single
+   species and could yield higher power for a given n.
+
+## Software and reproducibility
+
+All analyses were conducted in R (v4.4.2). Key packages: `lme4` v`r
+packageVersion("lme4")` for GLMM fitting, `tidyverse` v`r
+packageVersion("tidyverse")` for data manipulation and visualisation. Scripts
+are in `src/`; intermediate results are cached in `out/` as `.rds` files.
+
+## References
+
+::: {#refs}
+:::
