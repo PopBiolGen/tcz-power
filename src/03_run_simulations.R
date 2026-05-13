@@ -1,5 +1,5 @@
 # 03_run_simulations.R
-# Run power simulations for both effect sizes (25% and 50% relative reduction).
+# Run power simulations for both effect sizes (25%, 50%, and 75% relative reduction).
 #
 # Two grids are produced:
 #   full_grid   — all species × n = 20, 25, 30 plots per group
@@ -20,7 +20,6 @@ species_df <- readRDS("out/species_baselines.rds")
 
 # ── Simulation settings ───────────────────────────────────────────────────────
 N_SIM      <- 200L    # Monte Carlo replicates per cell
-SIGMA_PLOT <- 0.5     # Between-plot SD on the logit scale (see Methods)
 EFFECTS    <- c(reduction_25pct = 0.75, reduction_50pct = 0.50, reduction_75pct = 0.25)
 N_CORES    <- min(parallel::detectCores() - 1L, 6L)
 
@@ -35,14 +34,21 @@ run_or_load <- function(cache_path, params, label) {
   message("Simulating ", label, " (", nrow(params), " cells, ",
           N_CORES, " cores) ...")
   power_vals <- mcmapply(
-    function(p0, n, eff)
-      sim_power_baci(p0 = p0, n_per_group = n, effect = eff,
-                     sigma_plot = SIGMA_PLOT, n_sim = N_SIM),
+    function(p0, sigma, n, eff)
+      sim_power_baci(p0 = p0, sigma = sigma, n_per_group = n, effect = eff,
+                     , n_sim = N_SIM),
     p0  = params$p_baseline,
+    sigma = params$sigma,
     n   = params$n_per_group,
     eff = params$effect,
     mc.cores = N_CORES
   )
+  # Coerce to numeric — if a parallel worker returned an error object instead
+  # of a value, convert it to NA rather than letting it become a list-column.
+  power_vals <- vapply(power_vals, function(x) {
+    if (is.numeric(x) && length(x) == 1L) x else NA_real_
+  }, numeric(1L))
+
   result <- mutate(params, power = power_vals)
   saveRDS(result, cache_path)
   message("Saved: ", cache_path)
@@ -53,8 +59,8 @@ run_or_load <- function(cache_path, params, label) {
 # All species × n ∈ {20, 25, 30} × both effect sizes
 
 full_params <- crossing(
-  select(species_df, species, p_baseline),
-  n_per_group = c(20L, 25L, 30L),
+  select(species_df, species, p_baseline, sigma),
+  n_per_group = c(20L, 35L, 50L),
   effect      = EFFECTS
 ) |>
   mutate(effect_label = names(EFFECTS)[match(effect, EFFECTS)])
@@ -66,15 +72,15 @@ power_full <- run_or_load("out/power_full_grid.rds", full_params, "full grid")
 # These are used to show power curves up to adequate sample sizes.
 
 focal_species <- c(
-  "Cat (Felis catus)",
-  "Bilby (Macrotis lagotis)",
-  "Lizard - goanna small (Varanus sp)",
-  "Lizard - goanna large (Varanus sp)"
+  "Cat",
+  "Bilby",
+  "Goanna",
+  "Bustard"
 )
 
 focal_params <- crossing(
   filter(species_df, species %in% focal_species) |>
-    select(species, p_baseline),
+    select(species, p_baseline, sigma),
   n_per_group = c(20L, 30L, 50L, 75L, 100L, 150L, 200L),
   effect       = EFFECTS
 ) |>

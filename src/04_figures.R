@@ -5,7 +5,7 @@
 # Outputs written to out/figures/:
 #   fig_power_vs_p.png    — power vs baseline p, all species, both effects
 #   fig_power_curves.png  — power vs n, focal species, both effects
-#   tbl_power_n25.csv     — summary table at n = 25 per group
+#   tbl_power_n35.csv     — summary table at n = 35 per group
 
 library(tidyverse)
 
@@ -26,7 +26,7 @@ fig_power_vs_p <- power_full |>
   filter(p_baseline < 1, p_baseline >= 0.01) |>
   mutate(
     n_label      = factor(paste0("n = ", n_per_group),
-                          levels = paste0("n = ", c(20, 25, 30))),
+                          levels = paste0("n = ", c(20, 35, 50))),
     effect_label = factor(effect_labels[effect_label],
                           levels = effect_labels)
   ) |>
@@ -91,9 +91,9 @@ fig_power_curves <- power_focal |>
 ggsave("out/figures/fig_power_curves.png", fig_power_curves,
        width = 8, height = 6, dpi = 200)
 
-# ── Table: summary at n = 25 per group ───────────────────────────────────────
-tbl_power_n25 <- power_full |>
-  filter(p_baseline < 1, p_baseline >= 0.01, n_per_group == 25) |>
+# ── Table: summary at n = 35 per group ───────────────────────────────────────
+tbl_power_n35 <- power_full |>
+  filter(p_baseline < 1, p_baseline >= 0.01, n_per_group == 35) |>
   select(species, p_baseline, effect_label, power) |>
   pivot_wider(names_from = effect_label, values_from = power,
               names_prefix = "power_") |>
@@ -111,6 +111,6 @@ tbl_power_n25 <- power_full |>
     `Power (75% reduction)` = power_reduction_75pct
   )
 
-write_csv(tbl_power_n25, "out/figures/tbl_power_n25.csv")
+write_csv(tbl_power_n35, "out/figures/tbl_power_n35.csv")
 
 message("Figures and table written to out/figures/")

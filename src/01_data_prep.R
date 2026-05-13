@@ -15,7 +15,10 @@ obs.freq <- read.csv("dat/Detection Table.csv")
 est.var <- read.csv("dat/Site variance.csv")
 
 # merge the two data frames on species name
-species_df <- merge(obs.freq, est.var)
+species_df <- merge(obs.freq, est.var) |> 
+  rename(species = species_collapse,
+         p_baseline = prob,
+         sigma = sdcor)
 
 dir.create("out", showWarnings = FALSE)
 saveRDS(species_df, "out/species_baselines.rds")
