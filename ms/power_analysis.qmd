@@ -83,9 +83,9 @@ optimiser.
 ### Simulation parameters
 
 **Baseline detection probabilities** were derived from historical sand-plot
-survey data (Table 9 of the project baseline report). 
+survey data. 
 
-**Between-plot variability** ($\sigma_{\text{plot}}$) was estimated from a binomial GLM with random effects of site, from previous data on repeat-surveyed sites. 
+**Between-plot variability** ($\sigma_{\text{plot}}$) was estimated from a binomial GLM with a fixed effect of year and random effect of site, from historical sand-plot data. 
 
 **Minimum detectable effect (MDE)**: three scenarios are compared:
 
@@ -111,7 +111,7 @@ at 9034 for reproducibility.
 ```{r tbl-baselines}
 #| label: tbl-baselines
 #| tbl-cap: "Baseline detection probabilities for all species recorded in
-#|   historical sand-plot surveys (n = 460 plots). Species are ordered by
+#|   historical sand-plot surveys. Species are ordered by
 #|   detection frequency."
 
 species_df |>
@@ -261,7 +261,7 @@ low for most species regardless of which MDE is assumed (@fig-power-vs-p,
 - **25% relative reduction**: power does not exceed ~25% for any species.
   The design cannot reliably distinguish a 25% decline from sampling noise.
 - **50% relative reduction**: power reaches ~40–60% for the most detectable
-  species (e.g. *Felis catus*, *Macrotis lagotis*) at $n = 50$, but still
+  species at $n = 50$, but still
   falls well short of the conventional 80% threshold.
 - **75% relative reduction**: power approaches or exceeds 80% at $n = 50$ for
   species with the highest baseline detection probabilities, suggesting that
@@ -272,23 +272,6 @@ counts than are currently budgeted (@fig-power-curves). For a 50% MDE,
 approximately 100–150 plots per group are needed for species with baseline
 $p \geq 0.35$. For a 25% MDE, sample requirements exceed 200 plots per group
 for all species.
-
-### Practical recommendations
-
-1. **Target species selection**: Focus power calculations on the handful of
-   focal species with highest baseline $p$ (e.g. *Felis catus*,
-   *Macrotis lagotis*, *Varanus* sp.), where even moderate sample sizes
-   provide some discrimination.
-2. **Increase n or accept a larger MDE**: If the budget cannot support
-   $n \geq 100$ plots per group, the study should be framed as capable of
-   detecting only large effects (≥ 50–75% reduction) and reported with
-   explicit power caveats.
-3. **Reduce residual variance**: Stratified placement of plots by habitat
-   type, or including habitat covariates in the model, may reduce
-   $\sigma_{\text{plot}}$ and improve power without adding plots.
-4. **Multiple species composite**: A multi-species index (e.g. species
-   richness of native fauna tracks) may have lower variance than any single
-   species and could yield higher power for a given n.
 
 ## Software and reproducibility
 
