@@ -23,7 +23,7 @@ library(knitr)
 # src/03_run_simulations.R, run from the project root).
 power_full  <- readRDS("../out/power_full_grid.rds")
 power_focal <- readRDS("../out/power_focal_grid.rds")
-species_df  <- readRDS("../out/species_baselines_road.rds")
+species_df  <- readRDS("../out/species_baselines.rds")
 
 effect_labels <- c(
   reduction_25pct = "25% relative reduction",
@@ -36,7 +36,7 @@ effect_labels <- c(
 
 This document reports a simulation-based statistical power analysis for a
 Before–After Control–Impact (BACI) monitoring design in which animal track
-detections at sand plots placed as 100m transects along sandy tracks are the primary response variable. The goal is to
+detections at sand plots are the primary response variable. The goal is to
 determine the number of plots required to reliably detect a biologically
 meaningful decline in track detection probability following an impact event.
 
@@ -80,24 +80,6 @@ $\beta_3$ rejects $H_0 : \beta_3 = 0$ at $\alpha = 0.05$.
 Models were fitted with the `lme4` package [@bates2015] using the BOBYQA
 optimiser.
 
-### Sand plot datasets
-
-We have historical data to work from.  The first dataset is from a large set of sandplots undertaken as part of a large study on Bilby distribution within the LaGrange region.  These are data from 2ha plots undertaken "between June and November" across a range of habitats in the region and from which we draw estimates of baseline detection probability, and (via a Federated data approach), estimates on between plot variation.  This is our only source of between plot variation, because this is the only data set for which we have repeat visits to sites.
-
-The second set of data are a much smaller set collected as part of a pilot study, in February 2024.  These data come from 100m transects walked along sandy tracks in the study area.  These road-transects generated much higher baseline probabilities for species of interest (see @fig-compare-baselines), which we assume is due to them being undertaken in February and only in the sandy country, rather than in the colder part of the year at a range of sites.
-
-```{r fig-compare-baselines}
-#| label: fig-compare-baselines
-#| fig-cap: "Baseline detection between the two datasets.  The 2ha sandplots (done in the cold part of the year in various habitat types) are on the y-axis and the road-transects (done in the wet season and only on sandy country) are on the x-axis"
-#| fig-width: 8
-#| fig-height: 6
-
-knitr::include_graphics(path = "../out/figures/baseline-p-comparison.png")
-```
-
-In what follows, we use the baseline probabilities coming from the road transects and the between plot variation coming from the 2ha plots.
-
-
 ### Simulation parameters
 
 **Baseline detection probabilities** were derived from historical sand-plot
@@ -134,12 +116,15 @@ at 9034 for reproducibility.
 
 species_df |>
   filter(p_baseline < 1) |>
+  select(species, detections, p_baseline, sigma) |>
   arrange(desc(p_baseline)) |> 
   mutate(
-    p_baseline = round(p_baseline, 3)
+    p_baseline = round(p_baseline, 3),
+    detections = as.integer(detections)
   ) |>
   rename(
     Species    = species,
+    Detections = detections,
     `Baseline p` = p_baseline,
     Sigma = sigma
   ) |>

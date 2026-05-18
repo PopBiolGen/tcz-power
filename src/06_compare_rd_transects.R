@@ -21,13 +21,13 @@ pilot.df$species <- row.names(pilot.df)
 
 # place together with sandplot data
 comp.df <- left_join(pilot.df, species_df) |> 
-  filter(!is.na(sigma))
+  filter(!is.na(sigma)) 
 
 ggplot(comp.df, aes(x = V1, y = p_baseline)) +
   geom_point() +
   ggrepel::geom_label_repel(aes(label = species)) +
   geom_abline()
-
+ggsave(filename = "out/figures/baseline-p-comparison.png")
 
 comp.df <- comp.df |> 
   select(species, sigma, p_baseline = V1)
