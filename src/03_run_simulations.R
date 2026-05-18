@@ -10,13 +10,12 @@
 #
 # Runtime: ~10–15 min on 6 cores (200 Monte Carlo reps per cell).
 
-library(tidyverse)
+
 library(parallel)
 
-source("src/01_data_prep.R")
-source("src/02_sim_function.R")
 
-species_df <- readRDS("out/species_baselines.rds")
+
+
 
 # ── Simulation settings ───────────────────────────────────────────────────────
 N_SIM      <- 200L    # Monte Carlo replicates per cell

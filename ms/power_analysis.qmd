@@ -1,5 +1,5 @@
 ---
-title: "Statistical Power Analysis: Sand-Plot Track Detection — BACI Design"
+title: "Statistical Power Analysis: Sand-Plot-on-road Track Detection — BACI Design"
 date: today
 format:
   html:
