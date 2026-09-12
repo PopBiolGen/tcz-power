@@ -1,0 +1,447 @@
+---
+title: "Statistical Power Analysis: Goanna Burrow Monitoring — BACI Design (NTA-KJ Pilot)"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    theme: cosmo
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(knitr)
+
+# All outputs are loaded from pre-computed RDS files (produced by
+# src/goanna-burrow-power/00_load_pilot_data.R and 03_run_simulations.R, run
+# from the project root).
+baselines           <- readRDS("../out/baselines.rds")
+encounter_rate_grid <- readRDS("../out/encounter_rate_grid.rds")
+species_grid        <- readRDS("../out/species_grid.rds")
+
+effect_labels <- c(
+  reduction_25pct = "25% relative reduction",
+  reduction_50pct = "50% relative reduction",
+  reduction_75pct = "75% relative reduction"
+)
+sigma_labels <- c(
+  low      = "Low inter-annual variability",
+  moderate = "Moderate inter-annual variability",
+  high     = "High inter-annual variability"
+)
+
+min_days_for_power <- function(grid, group_cols, power_threshold = 0.80) {
+  grid |>
+    group_by(across(all_of(group_cols))) |>
+    arrange(days_per_cell) |>
+    summarise(
+      min_days_80 = {
+        hit <- days_per_cell[power >= power_threshold]
+        if (length(hit) > 0) min(hit) else NA_real_
+      },
+      max_days_tested = max(days_per_cell),
+      .groups = "drop"
+    )
+}
+```
+
+## Overview
+
+This document reports a simulation-based statistical power analysis for a Before–After
+Control–Impact (BACI) monitoring design based on the `goanna-hunting-app` burrow-search protocol,
+using the first field tranche of pilot data (NTA-KJ, 3 field days). It is a sibling analysis to
+`power_analysis.qmd` (sand-plot/road-transect track detection), sharing the same overall BACI
+structure — 3 survey years before an impact event and 3 after — but differing in three structural
+respects that follow from how goanna-burrow searches are actually conducted:
+
+- **No fixed sites.** Each burrow search is a one-off event at wherever the crew happens to be
+  searching, not a revisit to a permanent plot. The unit of replication is therefore the individual
+  search (for the encounter-rate response) or the individual inspected burrow (for the
+  species-composition response), and inter-annual variation is modelled with a random intercept for
+  **year** rather than for site.
+- **Two different response variables and error distributions**, addressing two different management
+  questions:
+  1. Is the rate at which searches encounter a **wandidji** burrow declining? (exponential
+     time-to-event)
+  2. Among burrows that get found and inspected, is the proportion containing each of 4 species
+     declining? (binomial, one model per species)
+- **Sample size is a consequence of effort and encounter rate, not a free design input.** How many
+  searches (or inspected burrows) a fixed budget of field days actually yields depends on how
+  quickly burrows are found — so the design axis reported throughout is **field days of effort per
+  design cell**, not a raw sample size.
+
+## Data
+
+Pilot data come from the NTA-KJ portion of the first `goanna-hunting-app` field tranche, read
+directly from the `data-warehousing` research-export CSV (see
+`../../goanna-burrow-analysis/CLAUDE.md` for the extraction pipeline).
+
+```{r tbl-pilot-summary}
+#| label: tbl-pilot-summary
+#| tbl-cap: "NTA-KJ pilot summary."
+
+tibble(
+  Quantity = c(
+    "Field days",
+    "Total searches",
+    "Wandidji burrow events (imputed)",
+    "Wandidji burrow events (drop first day)",
+    "Inspected burrows"
+  ),
+  Value = c(
+    baselines$n_field_days,
+    baselines$lambda0_impute$n_searches,
+    round(baselines$lambda0_impute$wandidji_events, 1),
+    round(baselines$lambda0_drop_day1$wandidji_events, 1),
+    baselines$species_baselines$n_inspected[1]
+  )
+) |>
+  kable(align = c("l", "r"))
+```
+
+### A field-protocol gap in the pilot
+
+`burrow_type` (the field used to identify wandidji burrows) was not recorded at all on the first
+field day, and is still partly missing on the second — the same "not always recorded early in the
+trial" issue, not two separate problems. An untyped found burrow is not the same as "no burrow", so
+it cannot simply be counted as a non-wandidji outcome. Two baseline wandidji encounter-rate ($\lambda_0$)
+estimates are therefore carried through the whole analysis as a labelled sensitivity pair, rather
+than picking one silently:
+
+- **impute** — every untyped found burrow (any date) is counted as a *fractional* wandidji event,
+  at the empirical wandidji rate among burrows where the type *was* recorded. This preserves the
+  person-time-at-risk contributed by every search, including the untyped-day searches.
+- **drop_day1** — the fully-untyped first field day is excluded outright (both from the event count
+  and from the time-at-risk denominator); the smaller residual gap on day 2 is still imputed the
+  same way (dropping day 1 doesn't change the empirical rate used, since day 1 contributed zero
+  typed rows to begin with).
+
+```{r tbl-lambda0-variants}
+#| label: tbl-lambda0-variants
+#| tbl-cap: "Baseline wandidji encounter-rate estimates under the two missing-data treatments."
+
+tibble(
+  Variant                 = c("Impute", "Drop first day"),
+  `Wandidji events`       = round(c(baselines$lambda0_impute$wandidji_events,
+                                     baselines$lambda0_drop_day1$wandidji_events), 1),
+  `Searches`              = c(baselines$lambda0_impute$n_searches,
+                               baselines$lambda0_drop_day1$n_searches),
+  `Field days`            = c(baselines$lambda0_impute$n_field_days,
+                               baselines$lambda0_drop_day1$n_field_days),
+  `lambda0 (events/sec)`  = signif(c(baselines$lambda0_impute$lambda0,
+                                      baselines$lambda0_drop_day1$lambda0), 3),
+  `Throughput (searches/day)` = round(c(baselines$lambda0_impute$throughput_per_day,
+                                         baselines$lambda0_drop_day1$throughput_per_day), 1)
+) |>
+  kable(align = c("l", "r", "r", "r", "r", "r"))
+```
+
+The two variants differ by only about
+`r round(100 * abs(baselines$lambda0_impute$lambda0 - baselines$lambda0_drop_day1$lambda0) / baselines$lambda0_impute$lambda0, 0)`%
+— small enough that, as the results below show, it makes little practical difference to the power
+curves.
+
+### Species baselines
+
+Denominator = every inspected burrow, regardless of whether `burrow_type` was recorded (inspection
+is a separate field, unaffected by the gap above). "Wanggali" and "wandidji" are Karajarri names for
+sand goanna and spiny-tailed goanna respectively; king brown and northern bluetongue are recorded
+directly under those codes.
+
+```{r tbl-species-baselines}
+#| label: tbl-species-baselines
+#| tbl-cap: "Baseline presence probability among inspected burrows, by species."
+
+baselines$species_baselines |>
+  arrange(desc(p0)) |>
+  transmute(
+    Species        = species_label,
+    `Field code`   = species_code,
+    `N present`    = n_present,
+    `N inspected`  = n_inspected,
+    `Baseline p0`  = round(p0, 4)
+  ) |>
+  kable(align = c("l", "l", "r", "r", "r"))
+```
+
+## Methods
+
+### Study design
+
+Both responses share a 2 (control/impact) $\times$ 2 (before/after) BACI structure over 6 survey
+years (3 before, 3 after). With no fixed sites, the year itself becomes the natural grouping for
+inter-annual variation: a **random intercept for year**, crossed with treatment (both control and
+impact areas are surveyed within the same years) and nested within period (each year belongs to
+exactly one of before/after by construction). This is the same mechanism that makes BACI designs
+work in general — a year with unusual conditions shifts both treatment arms together, so the
+treatment $\times$ period contrast is estimated net of that shared variation rather than confounded
+with it.
+
+### Response 1: wandidji burrow encounter rate
+
+Each search is treated as a time-to-event trial. Let $T$ be the time to encountering a wandidji
+burrow and $\lambda$ the hazard rate:
+
+$$
+\log(\lambda_{ijt}) = \log(\lambda_0) + u_j + \log(\text{effect}) \cdot \text{After}_t \times \text{Impact}_i
+$$
+
+where $j$ indexes year (1–6), $u_j \sim \mathcal{N}(0, \sigma^2_{\text{year}})$, and `effect` is the
+proportion of baseline rate retained in the impact/after cell. A search ending in anything other
+than a wandidji burrow (a different burrow type found, or nothing found) is **right-censored** at
+its observed duration rather than dropped — filtering the dataset down to wandidji-only outcomes
+would hide a real decline in encounter rate behind an unchanged "time among successes" average,
+since a real decline would show up as *more* non-wandidji outcomes, not just slower ones.
+
+Fitted as a Poisson GLMM with a `log(duration)` offset — the standard, computationally cheap
+equivalent of censored exponential regression — testing the period $\times$ treatment interaction
+via a Wald $z$-test:
+
+$$
+\texttt{event} \sim \texttt{period * treatment} + (1 \mid \texttt{year}) + \texttt{offset(log(duration))}, \quad \text{family = Poisson}
+$$
+
+**Sample size is derived, not a free input.** The number of searches achievable in a design cell is
+
+$$
+n_{\text{cell}} = \texttt{days\_per\_cell} \times \texttt{throughput}_0 \times m_{\text{cell}}
+$$
+
+where $m_{\text{cell}} = 1$ in every cell except impact/after, where $m_{\text{cell}} = \text{effect}$
+— the same rate decline that reduces the hazard also means fewer searches get completed in the same
+days of fieldwork. The unit of replication remains the individual search; what changes with effort
+and effect size is how many such replicates are obtained.
+
+### Response 2: proportion of inspected burrows containing each species
+
+For each of the 4 species independently (king brown, wanggali, wandidji, northern bluetongue), a
+binomial GLMM with the same year random intercept:
+
+$$
+\text{logit}(p_{jt}) = \text{logit}(p_0) + u_j + \texttt{After}_t \times \texttt{Impact}_i \cdot \beta_3
+$$
+
+Two distinct effect parameters govern each simulated dataset, because "fewer burrows get found" and
+"the mix of species inside found burrows changes" are different hypotheses that happen to share a
+sample-size mechanism:
+
+- **`activity_effect`** — the proportion of baseline *overall* (any-type) burrow-finding activity
+  retained in the impact/after cell. This drives sample size only (via the same
+  $n_{\text{cell}}$ formula as response 1, using the inspected-burrow throughput), not the tested
+  coefficient. By default it is set equal to response 1's `effect`, on the simplifying assumption
+  that overall goanna-burrow activity and wandidji-specific activity decline together — a documented
+  assumption, not a measured fact.
+- **`composition_effect`** — the proportion of baseline species-presence probability retained in the
+  impact/after cell. This *is* the parameter tested via the period $\times$ treatment interaction.
+
+In the results below, `composition_effect = activity_effect` throughout (the coupled default).
+
+### Simulation parameters
+
+- **Effect sizes**: the same three scenarios as `power_analysis.qmd` — 25%, 50%, and 75% relative
+  reduction (i.e. 75%, 50%, and 25% of baseline retained).
+- **Inter-annual variability ($\sigma_{\text{year}}$)**: unmeasured — the pilot is one month, so it
+  carries no information about year-to-year variance. Swept as low/moderate/high scenarios rather
+  than fixed at a guessed value; "moderate" is loosely anchored to the existing sand-plot analysis's
+  own Goanna between-plot logit-SD (~1.15) as an order-of-magnitude reference only.
+- **Field-effort grid (`days_per_cell`)**: response 1 uses 1–20 days/cell (its baseline per-search
+  event probability is high enough that a handful of field days already gives strong power);
+  response 2 uses 5–80 days/cell, an order of magnitude larger, since the rarest species
+  (baseline prevalence below 1%) need much more effort before power curves become informative.
+- 200 Monte Carlo replicates per grid cell, `parallel::mcmapply` across up to 6 cores, seed 9034.
+- With only 6 year-levels, singular/boundary GLMM fits are expected, especially at low effort and
+  for rare species — the fraction of singular fits is tracked for every grid cell (see
+  @sec-caveats).
+
+## Results
+
+### Wandidji burrow encounter rate
+
+```{r fig-encounter-rate-power}
+#| label: fig-encounter-rate-power
+#| fig-cap: "Simulated power to detect a decline in wandidji burrow encounter rate, vs field
+#|   days of effort per design cell. Facets: inter-annual variability. Colour: minimum
+#|   detectable effect. Linetype: baseline lambda0 treatment. Dashed line = 80% power."
+#| fig-width: 10
+#| fig-height: 5
+
+encounter_rate_grid |>
+  mutate(
+    effect_label     = factor(effect_labels[effect_label], levels = effect_labels),
+    sigma_year_label = factor(sigma_labels[sigma_year_label], levels = sigma_labels),
+    lambda0_variant  = str_to_title(str_replace(lambda0_variant, "_", " "))
+  ) |>
+  ggplot(aes(x = days_per_cell, y = power, colour = effect_label,
+             linetype = lambda0_variant, group = interaction(effect_label, lambda0_variant))) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
+  geom_point(size = 1.8) +
+  geom_line() +
+  facet_wrap(~sigma_year_label) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_colour_manual(
+    values = c("25% relative reduction" = "#E41A1C",
+               "50% relative reduction" = "#377EB8",
+               "75% relative reduction" = "orange"),
+    name = "Minimum detectable effect"
+  ) +
+  labs(x = "Field days of effort per design cell", y = "Simulated power",
+       linetype = "Baseline lambda0 estimate") +
+  theme_bw() +
+  theme(
+    legend.position  = "bottom",
+    legend.box       = "vertical",
+    strip.background = element_rect(fill = "grey92"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r tbl-min-days-encounter}
+#| label: tbl-min-days-encounter
+#| tbl-cap: "Minimum field days per design cell at which simulated power first reaches 80%,
+#|   by effect size, inter-annual variability, and lambda0 treatment. NA = 80% power not
+#|   reached within the tested range (up to 20 days/cell)."
+
+min_days_for_power(encounter_rate_grid, c("lambda0_variant", "effect_label", "sigma_year_label")) |>
+  mutate(
+    lambda0_variant  = str_to_title(str_replace(lambda0_variant, "_", " ")),
+    effect_label     = effect_labels[effect_label],
+    sigma_year_label = sigma_labels[sigma_year_label]
+  ) |>
+  arrange(effect_label, sigma_year_label, lambda0_variant) |>
+  rename(`Lambda0 treatment` = lambda0_variant, `Effect` = effect_label,
+         `Inter-annual variability` = sigma_year_label,
+         `Min. days for 80% power` = min_days_80, `Max. days tested` = max_days_tested) |>
+  kable(align = c("l", "l", "l", "r", "r"))
+```
+
+Power rises quickly with field days for this response. Under moderate inter-annual variability, a
+75% or 50% relative reduction reaches 80% power within about 5–10 days of effort per cell; a 25%
+reduction is markedly harder to detect — power still falls short of 80% even at 20 days/cell across
+all three variability scenarios, meaning subtle declines in wandidji encounter rate would need more
+effort than is explored here to detect reliably. The two $\lambda_0$ treatments (impute vs.
+drop first day) track closely throughout, confirming that the missing-`burrow_type` handling
+doesn't materially change the conclusions.
+
+### Proportion of inspected burrows containing each species
+
+```{r fig-species-power}
+#| label: fig-species-power
+#| fig-cap: "Simulated power to detect a decline in the proportion of inspected burrows
+#|   containing each species, vs field days of effort per design cell. Facets: species (rows)
+#|   x inter-annual variability (columns). Colour: minimum detectable effect
+#|   (composition_effect = activity_effect). Dashed line = 80% power."
+#| fig-width: 10
+#| fig-height: 9
+
+species_grid |>
+  mutate(
+    effect_label     = factor(effect_labels[effect_label], levels = effect_labels),
+    sigma_year_label = factor(sigma_labels[sigma_year_label], levels = sigma_labels)
+  ) |>
+  ggplot(aes(x = days_per_cell, y = power, colour = effect_label, group = effect_label)) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
+  geom_point(size = 1.8) +
+  geom_line() +
+  facet_grid(species_label ~ sigma_year_label) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  scale_colour_manual(
+    values = c("25% relative reduction" = "#E41A1C",
+               "50% relative reduction" = "#377EB8",
+               "75% relative reduction" = "orange"),
+    name = "Minimum detectable effect"
+  ) +
+  labs(x = "Field days of effort per design cell", y = "Simulated power") +
+  theme_bw() +
+  theme(
+    legend.position  = "bottom",
+    strip.background = element_rect(fill = "grey92"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r tbl-min-days-species}
+#| label: tbl-min-days-species
+#| tbl-cap: "Minimum field days per design cell at which simulated power first reaches 80%,
+#|   by species, effect size, and inter-annual variability. NA = 80% power not reached within
+#|   the tested range (up to 80 days/cell)."
+
+min_days_for_power(species_grid, c("species_label", "effect_label", "sigma_year_label")) |>
+  mutate(
+    effect_label     = effect_labels[effect_label],
+    sigma_year_label = sigma_labels[sigma_year_label]
+  ) |>
+  arrange(species_label, effect_label, sigma_year_label) |>
+  rename(Species = species_label, Effect = effect_label,
+         `Inter-annual variability` = sigma_year_label,
+         `Min. days for 80% power` = min_days_80, `Max. days tested` = max_days_tested) |>
+  kable(align = c("l", "l", "l", "r", "r"))
+```
+
+Detecting a decline in species composition needs an order of magnitude more effort than the
+encounter-rate response, tracking each species' baseline prevalence (@tbl-species-baselines):
+wandidji (the most common, `r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="wandidji"],1)`%)
+and king brown (`r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="king_brown"],1)`%)
+reach 80% power for a 75% reduction at around 40 days/cell; northern bluetongue
+(`r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="northern_bluetongue"],1)`%)
+needs closer to 80 days/cell for the same. Wanggali — the rarest species at only
+`r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="wanggali"],2)`%
+baseline prevalence — does not reach 80% power anywhere in the tested range (up to 80 days/cell,
+any effect size or variability scenario): a decline in wanggali occupancy of burrows would likely
+not be reliably detectable at feasible monitoring effort.
+
+## Caveats {#sec-caveats}
+
+```{r tbl-singular-fits}
+#| label: tbl-singular-fits
+#| tbl-cap: "Grid cells with more than 20% singular/boundary GLMM fits (unreliable year-variance
+#|   estimation), by response. A high singular fraction means the power estimate for that cell
+#|   should be read with caution rather than taken at face value."
+
+bind_rows(
+  encounter_rate_grid |>
+    transmute(response = paste0("encounter_rate (", lambda0_variant, ")"),
+              days_per_cell, effect_label = effect_labels[effect_label],
+              sigma_year_label = sigma_labels[sigma_year_label], singular_fraction),
+  species_grid |>
+    transmute(response = species_label, days_per_cell,
+              effect_label = effect_labels[effect_label],
+              sigma_year_label = sigma_labels[sigma_year_label], singular_fraction)
+) |>
+  filter(singular_fraction > 0.20) |>
+  arrange(desc(singular_fraction)) |>
+  mutate(singular_fraction = round(singular_fraction, 2)) |>
+  rename(Response = response, `Days/cell` = days_per_cell, Effect = effect_label,
+         `Inter-annual variability` = sigma_year_label,
+         `Singular fit fraction` = singular_fraction) |>
+  kable(align = c("l", "r", "l", "l", "r"))
+```
+
+Several considerations bear on how these results should be used:
+
+- **Pilot-scale baselines.** All baseline rates/proportions come from one month of data at a single
+  native title area (139 searches, 3 field days) — a trial run intended to test process, not a
+  mature baseline. Point estimates, especially for the rarer species (as few as 1–5 detections),
+  carry wide uncertainty that the $\sigma_{\text{year}}$ and effect-size sensitivity sweeps only
+  partly capture.
+- **Singular fits.** With only 6 year-levels, the year-variance component is estimated imprecisely,
+  and many grid cells (concentrated at low effort and for rare species — up to 82% of fits in the
+  worst cells) return a singular/boundary fit. Power estimates in those cells should be treated as
+  approximate.
+- **Coupled activity/composition effects.** Response 2's sample size assumes overall burrow-finding
+  activity and species-specific composition decline together (`activity_effect = composition_effect`
+  throughout). If these were to diverge in practice, the actual achievable sample size — and hence
+  power — could differ from what's shown here.
+
+## Software and reproducibility
+
+All analyses were conducted in R (v`r getRversion()`). Key packages: `lme4` v`r
+packageVersion("lme4")` for GLMM fitting, `tidyverse` v`r packageVersion("tidyverse")` for data
+manipulation and visualisation. Scripts are in `src/goanna-burrow-power/`; intermediate results are
+cached in `out/` as `.rds` files (`baselines.rds`, `encounter_rate_grid.rds`, `species_grid.rds`).
