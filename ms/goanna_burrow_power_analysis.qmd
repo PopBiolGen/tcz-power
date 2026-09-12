@@ -23,8 +23,20 @@ library(knitr)
 # src/goanna-burrow-power/00_load_pilot_data.R and 03_run_simulations.R, run
 # from the project root).
 baselines           <- readRDS("../out/baselines.rds")
-encounter_rate_grid <- readRDS("../out/encounter_rate_grid.rds")
-species_grid        <- readRDS("../out/species_grid.rds")
+
+# `days_per_cell` (the simulation's own unit) is the TOTAL effort invested in
+# one treatment arm across all 3 years of one period -- the sim functions
+# spread it evenly (in expectation) across those years. The field crew's
+# actual plan is constant annual effort per area (north/impact, south/control)
+# sustained every year, so everything below is reported as
+# days_per_year_per_area = days_per_cell / N_YEARS_PER_PERIOD instead -- the
+# unit that maps directly onto that planning conversation.
+N_YEARS_PER_PERIOD <- 3L  # matches n_before/n_after in 01_/02_sim_function_*.R
+
+encounter_rate_grid <- readRDS("../out/encounter_rate_grid.rds") |>
+  mutate(days_per_year_per_area = days_per_cell / N_YEARS_PER_PERIOD)
+species_grid <- readRDS("../out/species_grid.rds") |>
+  mutate(days_per_year_per_area = days_per_cell / N_YEARS_PER_PERIOD)
 
 effect_labels <- c(
   reduction_25pct = "25% relative reduction",
@@ -40,13 +52,13 @@ sigma_labels <- c(
 min_days_for_power <- function(grid, group_cols, power_threshold = 0.80) {
   grid |>
     group_by(across(all_of(group_cols))) |>
-    arrange(days_per_cell) |>
+    arrange(days_per_year_per_area) |>
     summarise(
       min_days_80 = {
-        hit <- days_per_cell[power >= power_threshold]
+        hit <- days_per_year_per_area[power >= power_threshold]
         if (length(hit) > 0) min(hit) else NA_real_
       },
-      max_days_tested = max(days_per_cell),
+      max_days_tested = max(days_per_year_per_area),
       .groups = "drop"
     )
 }
@@ -73,9 +85,12 @@ respects that follow from how goanna-burrow searches are actually conducted:
   2. Among burrows that get found and inspected, is the proportion containing each of 4 species
      declining? (binomial, one model per species)
 - **Sample size is a consequence of effort and encounter rate, not a free design input.** How many
-  searches (or inspected burrows) a fixed budget of field days actually yields depends on how
-  quickly burrows are found — so the design axis reported throughout is **field days of effort per
-  design cell**, not a raw sample size.
+  searches (or inspected burrows) a fixed field-effort budget actually yields depends on how quickly
+  burrows are found — so the design axis reported throughout is **field days per year, per area**
+  (the north/impact and south/control areas the crew plans to visit every year), not a raw sample
+  size. The simulation itself works in total effort per 3-year period per area; every figure and
+  table here converts that to the equivalent constant annual effort (period total ÷ 3 years) to
+  match how the monitoring program is actually planned.
 
 ## Data
 
@@ -208,16 +223,20 @@ $$
 \texttt{event} \sim \texttt{period * treatment} + (1 \mid \texttt{year}) + \texttt{offset(log(duration))}, \quad \text{family = Poisson}
 $$
 
-**Sample size is derived, not a free input.** The number of searches achievable in a design cell is
+**Sample size is derived, not a free input.** The number of searches achievable in a design cell
+(one treatment arm, summed over the 3 years of one period) is
 
 $$
-n_{\text{cell}} = \texttt{days\_per\_cell} \times \texttt{throughput}_0 \times m_{\text{cell}}
+n_{\text{cell}} = \left(\texttt{days\_per\_year\_per\_area} \times 3\right) \times \texttt{throughput}_0 \times m_{\text{cell}}
 $$
 
 where $m_{\text{cell}} = 1$ in every cell except impact/after, where $m_{\text{cell}} = \text{effect}$
 — the same rate decline that reduces the hazard also means fewer searches get completed in the same
 days of fieldwork. The unit of replication remains the individual search; what changes with effort
-and effect size is how many such replicates are obtained.
+and effect size is how many such replicates are obtained. Each year's simulated searches within a
+period are allocated across that period's 3 years by uniform random draw, so `days_per_year_per_area`
+is honoured in expectation (constant annual effort) rather than forced to an exact 1/3-1/3-1/3 split
+in every simulated replicate — a reasonable stand-in for real fieldwork variability year to year.
 
 ### Response 2: proportion of inspected burrows containing each species
 
@@ -251,10 +270,11 @@ In the results below, `composition_effect = activity_effect` throughout (the cou
   carries no information about year-to-year variance. Swept as low/moderate/high scenarios rather
   than fixed at a guessed value; "moderate" is loosely anchored to the existing sand-plot analysis's
   own Goanna between-plot logit-SD (~1.15) as an order-of-magnitude reference only.
-- **Field-effort grid (`days_per_cell`)**: response 1 uses 1–20 days/cell (its baseline per-search
-  event probability is high enough that a handful of field days already gives strong power);
-  response 2 uses 5–80 days/cell, an order of magnitude larger, since the rarest species
-  (baseline prevalence below 1%) need much more effort before power curves become informative.
+- **Field-effort grid**: response 1 covers about 0.3–6.7 field days/year per area (its baseline
+  per-search event probability is high enough that a handful of field days already gives strong
+  power); response 2 covers about 1.7–26.7 days/year per area, an order of magnitude larger, since
+  the rarest species (baseline prevalence below 1%) need much more effort before power curves become
+  informative.
 - 200 Monte Carlo replicates per grid cell, `parallel::mcmapply` across up to 6 cores, seed 9034.
 - With only 6 year-levels, singular/boundary GLMM fits are expected, especially at low effort and
   for rare species — the fraction of singular fits is tracked for every grid cell (see
@@ -267,7 +287,7 @@ In the results below, `composition_effect = activity_effect` throughout (the cou
 ```{r fig-encounter-rate-power}
 #| label: fig-encounter-rate-power
 #| fig-cap: "Simulated power to detect a decline in wandidji burrow encounter rate, vs field
-#|   days of effort per design cell. Facets: inter-annual variability. Colour: minimum
+#|   days per year, per area. Facets: inter-annual variability. Colour: minimum
 #|   detectable effect. Linetype: baseline lambda0 treatment. Dashed line = 80% power."
 #| fig-width: 10
 #| fig-height: 5
@@ -278,7 +298,7 @@ encounter_rate_grid |>
     sigma_year_label = factor(sigma_labels[sigma_year_label], levels = sigma_labels),
     lambda0_variant  = str_to_title(str_replace(lambda0_variant, "_", " "))
   ) |>
-  ggplot(aes(x = days_per_cell, y = power, colour = effect_label,
+  ggplot(aes(x = days_per_year_per_area, y = power, colour = effect_label,
              linetype = lambda0_variant, group = interaction(effect_label, lambda0_variant))) +
   geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
   geom_point(size = 1.8) +
@@ -291,7 +311,7 @@ encounter_rate_grid |>
                "75% relative reduction" = "orange"),
     name = "Minimum detectable effect"
   ) +
-  labs(x = "Field days of effort per design cell", y = "Simulated power",
+  labs(x = "Field days per year, per area (north/south)", y = "Simulated power",
        linetype = "Baseline lambda0 estimate") +
   theme_bw() +
   theme(
@@ -304,37 +324,40 @@ encounter_rate_grid |>
 
 ```{r tbl-min-days-encounter}
 #| label: tbl-min-days-encounter
-#| tbl-cap: "Minimum field days per design cell at which simulated power first reaches 80%,
+#| tbl-cap: "Minimum field days per year, per area, at which simulated power first reaches 80%,
 #|   by effect size, inter-annual variability, and lambda0 treatment. NA = 80% power not
-#|   reached within the tested range (up to 20 days/cell)."
+#|   reached within the tested range (up to 6.7 days/year per area)."
 
 min_days_for_power(encounter_rate_grid, c("lambda0_variant", "effect_label", "sigma_year_label")) |>
   mutate(
     lambda0_variant  = str_to_title(str_replace(lambda0_variant, "_", " ")),
     effect_label     = effect_labels[effect_label],
-    sigma_year_label = sigma_labels[sigma_year_label]
+    sigma_year_label = sigma_labels[sigma_year_label],
+    min_days_80      = round(min_days_80, 1),
+    max_days_tested  = round(max_days_tested, 1)
   ) |>
   arrange(effect_label, sigma_year_label, lambda0_variant) |>
   rename(`Lambda0 treatment` = lambda0_variant, `Effect` = effect_label,
          `Inter-annual variability` = sigma_year_label,
-         `Min. days for 80% power` = min_days_80, `Max. days tested` = max_days_tested) |>
+         `Min. days/year/area for 80% power` = min_days_80,
+         `Max. days/year/area tested` = max_days_tested) |>
   kable(align = c("l", "l", "l", "r", "r"))
 ```
 
 Power rises quickly with field days for this response. Under moderate inter-annual variability, a
-75% or 50% relative reduction reaches 80% power within about 5–10 days of effort per cell; a 25%
-reduction is markedly harder to detect — power still falls short of 80% even at 20 days/cell across
-all three variability scenarios, meaning subtle declines in wandidji encounter rate would need more
-effort than is explored here to detect reliably. The two $\lambda_0$ treatments (impute vs.
-drop first day) track closely throughout, confirming that the missing-`burrow_type` handling
-doesn't materially change the conclusions.
+75% or 50% relative reduction reaches 80% power at roughly 1.7–3.3 days/year per area; a 25%
+reduction is markedly harder to detect — power still falls short of 80% even at 6.7 days/year per
+area across all three variability scenarios, meaning subtle declines in wandidji encounter rate
+would need more effort than is explored here to detect reliably. The two $\lambda_0$ treatments
+(impute vs. drop first day) track closely throughout, confirming that the missing-`burrow_type`
+handling doesn't materially change the conclusions.
 
 ### Proportion of inspected burrows containing each species
 
 ```{r fig-species-power}
 #| label: fig-species-power
 #| fig-cap: "Simulated power to detect a decline in the proportion of inspected burrows
-#|   containing each species, vs field days of effort per design cell. Facets: species (rows)
+#|   containing each species, vs field days per year, per area. Facets: species (rows)
 #|   x inter-annual variability (columns). Colour: minimum detectable effect
 #|   (composition_effect = activity_effect). Dashed line = 80% power."
 #| fig-width: 10
@@ -345,7 +368,7 @@ species_grid |>
     effect_label     = factor(effect_labels[effect_label], levels = effect_labels),
     sigma_year_label = factor(sigma_labels[sigma_year_label], levels = sigma_labels)
   ) |>
-  ggplot(aes(x = days_per_cell, y = power, colour = effect_label, group = effect_label)) +
+  ggplot(aes(x = days_per_year_per_area, y = power, colour = effect_label, group = effect_label)) +
   geom_hline(yintercept = 0.80, linetype = "dashed", colour = "grey40") +
   geom_point(size = 1.8) +
   geom_line() +
@@ -357,7 +380,7 @@ species_grid |>
                "75% relative reduction" = "orange"),
     name = "Minimum detectable effect"
   ) +
-  labs(x = "Field days of effort per design cell", y = "Simulated power") +
+  labs(x = "Field days per year, per area (north/south)", y = "Simulated power") +
   theme_bw() +
   theme(
     legend.position  = "bottom",
@@ -368,19 +391,22 @@ species_grid |>
 
 ```{r tbl-min-days-species}
 #| label: tbl-min-days-species
-#| tbl-cap: "Minimum field days per design cell at which simulated power first reaches 80%,
+#| tbl-cap: "Minimum field days per year, per area, at which simulated power first reaches 80%,
 #|   by species, effect size, and inter-annual variability. NA = 80% power not reached within
-#|   the tested range (up to 80 days/cell)."
+#|   the tested range (up to 26.7 days/year per area)."
 
 min_days_for_power(species_grid, c("species_label", "effect_label", "sigma_year_label")) |>
   mutate(
     effect_label     = effect_labels[effect_label],
-    sigma_year_label = sigma_labels[sigma_year_label]
+    sigma_year_label = sigma_labels[sigma_year_label],
+    min_days_80      = round(min_days_80, 1),
+    max_days_tested  = round(max_days_tested, 1)
   ) |>
   arrange(species_label, effect_label, sigma_year_label) |>
   rename(Species = species_label, Effect = effect_label,
          `Inter-annual variability` = sigma_year_label,
-         `Min. days for 80% power` = min_days_80, `Max. days tested` = max_days_tested) |>
+         `Min. days/year/area for 80% power` = min_days_80,
+         `Max. days/year/area tested` = max_days_tested) |>
   kable(align = c("l", "l", "l", "r", "r"))
 ```
 
@@ -388,13 +414,13 @@ Detecting a decline in species composition needs an order of magnitude more effo
 encounter-rate response, tracking each species' baseline prevalence (@tbl-species-baselines):
 wandidji (the most common, `r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="wandidji"],1)`%)
 and king brown (`r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="king_brown"],1)`%)
-reach 80% power for a 75% reduction at around 40 days/cell; northern bluetongue
+reach 80% power for a 75% reduction at around 13.3 days/year per area; northern bluetongue
 (`r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="northern_bluetongue"],1)`%)
-needs closer to 80 days/cell for the same. Wanggali — the rarest species at only
+needs closer to 26.7 days/year per area for the same. Wanggali — the rarest species at only
 `r round(100*baselines$species_baselines$p0[baselines$species_baselines$species_label=="wanggali"],2)`%
-baseline prevalence — does not reach 80% power anywhere in the tested range (up to 80 days/cell,
-any effect size or variability scenario): a decline in wanggali occupancy of burrows would likely
-not be reliably detectable at feasible monitoring effort.
+baseline prevalence — does not reach 80% power anywhere in the tested range (up to 26.7 days/year
+per area, any effect size or variability scenario): a decline in wanggali occupancy of burrows would
+likely not be reliably detectable at feasible monitoring effort.
 
 ## Caveats {#sec-caveats}
 
@@ -407,17 +433,18 @@ not be reliably detectable at feasible monitoring effort.
 bind_rows(
   encounter_rate_grid |>
     transmute(response = paste0("encounter_rate (", lambda0_variant, ")"),
-              days_per_cell, effect_label = effect_labels[effect_label],
+              days_per_year_per_area, effect_label = effect_labels[effect_label],
               sigma_year_label = sigma_labels[sigma_year_label], singular_fraction),
   species_grid |>
-    transmute(response = species_label, days_per_cell,
+    transmute(response = species_label, days_per_year_per_area,
               effect_label = effect_labels[effect_label],
               sigma_year_label = sigma_labels[sigma_year_label], singular_fraction)
 ) |>
   filter(singular_fraction > 0.20) |>
   arrange(desc(singular_fraction)) |>
-  mutate(singular_fraction = round(singular_fraction, 2)) |>
-  rename(Response = response, `Days/cell` = days_per_cell, Effect = effect_label,
+  mutate(singular_fraction    = round(singular_fraction, 2),
+         days_per_year_per_area = round(days_per_year_per_area, 1)) |>
+  rename(Response = response, `Days/year/area` = days_per_year_per_area, Effect = effect_label,
          `Inter-annual variability` = sigma_year_label,
          `Singular fit fraction` = singular_fraction) |>
   kable(align = c("l", "r", "l", "l", "r"))
